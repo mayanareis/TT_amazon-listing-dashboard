@@ -1,0 +1,43 @@
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Python bytecode ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+
+# ── Environment / secrets ──────────────────────────────────────────────────────
+.env
+.env.*
+secrets.toml
+
+# ── Logs ───────────────────────────────────────────────────────────────────────
+*.log
+
+# ── OS artefacts ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor / IDE ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── Raw datasets — never commit source data to version control ─────────────────
+# Cleaned output (data/cleaned/) IS committed so the dashboard works without
+# needing to re-run the pipeline after a fresh clone.
+data/raw/
+
+# ── Jupyter ────────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Distribution / packaging ───────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
