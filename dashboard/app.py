@@ -430,8 +430,8 @@ DESC_SECTION_PATTERNS: dict = {
 # ══════════════════════════════════════════════════════════════════════════════
 MESSAGING_CATEGORIES: dict = {
     "Social Proof": [
-        r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",  # #1 brand / No.1 brand / number one brand
-        r"\brecommended\s+by\s+(moms?|doctors?|pediatricians?)\b",
+        r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",
+        r"(?:recommended\s+by\s+(?:moms?|doctors?|pediatricians?)|doctors?\s+recommended|pediatrician[s]?\s+recommended)",
         r"\bsurvey\b",
         r"\bclinically\s+tested\b",
         r"\baward[- ]?winning\b",
@@ -538,15 +538,16 @@ MESSAGING_CATEGORY_EXAMPLES: dict = {
 # Specific social proof phrases for fine-grained detection within the
 # "Social Proof" category above.
 SOCIAL_PROOF_PATTERNS: dict = {
-    "#1 Brand":                  r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",
-    "Recommended by Moms":       r"\brecommended\s+by\s+moms?\b",
-    "Recommended by Doctors":    r"\brecommended\s+by\s+doctors?\b",
-    "Clinically Tested":         r"\bclinically\s+tested\b",
-    "Survey / Study":            r"\bsurvey\b|\bstud(?:y|ied)\b",
-    "Award Winning":             r"\baward[- ]?winning\b",
-    "Trusted By":                r"\btrusted\s+by\b",
-    "Millions of Moms":          r"\bmillion[s]?\s+(of\s+)?moms?\b",
-    "Pediatrician Recommended":  r"\bpediatrician\b",
+    "#1 Brand":                 r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",
+    "Recommended by Moms":      r"(?:recommended\s+by\s+moms?|moms?\s+recommend)",
+    "Recommended by Doctors":   r"(?:recommended\s+by\s+doctors?|doctor[s]?\s+recommended|doctors?\s+recommend)",
+    "Clinically Tested/Proven": r"\bclinically\s+(?:tested|proven|validated|studied)\b",
+    "Survey / Study":           r"\bsurvey\b|\bstud(?:y|ied)\b",
+    "Award Winning":            r"\baward[- ]?winning\b",
+    "Trusted By":               r"\btrusted\s+by\b",
+    "Millions of Moms":         r"(?:million[s]?\s+(?:of\s+)?moms?|trusted\s+by\s+million[s]?)",
+    "Pediatrician Recommended": r"(?:pediatrician[s]?\s*(?:recommended|approved|tested)?|recommended\s+by\s+pediatricians?)",
+    "Trusted by Parents":       r"\btrusted\s+by\s+(?:parents?|families|caregivers?)\b",
 }
 
 
@@ -1154,6 +1155,59 @@ def build_differentiation_insights(
     }
 
 
+def extract_section_examples(
+    df: pd.DataFrame,
+    text_col: str = "description",
+    n_examples: int = 3,
+    context_chars: int = 60,
+) -> dict:
+    """Extract short real-text examples from the dataset for each DESC_SECTION_PATTERNS section.
+
+    For each section, searches actual descriptions and returns a list of short
+    matching snippets so clients see real product language rather than abstract
+    pattern descriptions.
+
+    Args:
+        df:            DataFrame containing the text column.
+        text_col:      Column to search (usually "description").
+        n_examples:    Maximum examples to return per section.
+        context_chars: Max characters to include after the match start.
+
+    Returns:
+        Dict mapping section name → list of example strings (may be empty).
+    """
+    if text_col not in df.columns or df.empty:
+        return {section: [] for section in DESC_SECTION_PATTERNS}
+
+    text_series = df[text_col].fillna("").astype(str)
+    results: dict = {}
+
+    for section, patterns in DESC_SECTION_PATTERNS.items():
+        combined = "|".join(f"(?:{p})" for p in patterns)
+        found: List[str] = []
+
+        for text in text_series:
+            if len(found) >= n_examples:
+                break
+            m = re.search(combined, text, flags=re.IGNORECASE)
+            if not m:
+                continue
+            # Grab the match + a window of surrounding text, then clean up
+            start = max(0, m.start() - 3)
+            end   = min(len(text), m.start() + context_chars)
+            snippet = text[start:end].strip()
+            snippet = re.sub(r"\s+", " ", snippet)          # collapse whitespace
+            snippet = re.sub(r"^[^a-zA-Z#]+", "", snippet)  # strip leading junk
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "…"
+            if snippet and snippet not in found:
+                found.append(snippet)
+
+        results[section] = found
+
+    return results
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1493,29 +1547,26 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ── Section 4: Title Structure & Quality ──────────────────────────────────
-    st.subheader("Title Structure & Quality")
+    # ── Section 4: Common Title Attributes ────────────────────────────────────
+    st.subheader("Common Title Attributes")
     st.caption(
-        "A well-structured title signals trust and helps shoppers make faster decisions. "
-        "The **Title Quality Score** (0–100) reflects how many key components each title includes: "
-        "product type, a standout feature, material, size, quantity, age/stage, and flow rate."
+        "Which product attributes appear most frequently in titles across the market? "
+        "This shows what sellers prioritise — and what is often left out — "
+        "across flow rate, size, material, quantity, anti-colic feature, and more."
     )
 
     title_scores_df = compute_title_quality_scores(df)
 
     if not title_scores_df.empty:
-        avg_title_score = title_scores_df["title_quality_score"].mean()
-
-        # Component coverage bar chart
         total = max(len(df), 1)
         comp_coverage_rows = []
         for component in TITLE_COMPONENTS:
             if component in title_scores_df.columns:
                 count = int(title_scores_df[component].sum())
                 comp_coverage_rows.append({
-                    "Title Component":      component,
-                    "Titles Including It":  count,
-                    "% of Titles":          round(count / total * 100, 1),
+                    "Title Attribute":     component,
+                    "Titles Including It": count,
+                    "% of Titles":         round(count / total * 100, 1),
                 })
         comp_cov_df = (
             pd.DataFrame(comp_coverage_rows)
@@ -1524,68 +1575,17 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
         )
 
         fig_comp_cov = px.bar(
-            comp_cov_df, x="Title Component", y="% of Titles",
-            title="Title Component Coverage — How Many Titles Include Each Element?",
+            comp_cov_df, x="Title Attribute", y="% of Titles",
+            title="How Often Each Attribute Appears in Product Titles",
             color="% of Titles", color_continuous_scale="Teal",
         )
         fig_comp_cov.update_layout(
             showlegend=False, xaxis_title="", yaxis_title="% of Titles", xaxis_tickangle=-20,
         )
         st.plotly_chart(fig_comp_cov, use_container_width=True)
-
-        # KPI row
-        least_covered = comp_cov_df.iloc[-1] if not comp_cov_df.empty else None
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Avg Title Quality Score", f"{avg_title_score:.0f} / 100")
-        if least_covered is not None:
-            c2.metric(
-                "Most Missing Component",
-                least_covered["Title Component"],
-                help=f"Only {least_covered['% of Titles']:.0f}% of titles include this.",
-            )
-        high_quality = int((title_scores_df["title_quality_score"] >= 57).sum())
-        c3.metric(
-            "Titles Covering 4+ Components",
-            f"{high_quality:,}",
-            help="Listings that include at least 4 of the 7 tracked components.",
-        )
-
-        # Score distribution histogram
-        fig_tqs = px.histogram(
-            title_scores_df, x="title_quality_score", nbins=15,
-            title="Title Quality Score Distribution",
-            color_discrete_sequence=["#4A90D9"],
-        )
-        fig_tqs.update_layout(
-            xaxis_title="Title Quality Score (0–100)", yaxis_title="Number of Products",
-        )
-        fig_tqs.add_vline(
-            x=avg_title_score, line_dash="dash", line_color="red",
-            annotation_text=f"Avg: {avg_title_score:.0f}",
-        )
-        st.plotly_chart(fig_tqs, use_container_width=True)
-
-        # Brand-level title quality
-        if "brand" in title_scores_df.columns:
-            brand_quality = (
-                title_scores_df.groupby("brand")["title_quality_score"]
-                .mean().round(1).sort_values(ascending=False)
-                .reset_index().head(15)
-                .rename(columns={"brand": "Brand", "title_quality_score": "Avg Title Quality Score"})
-            )
-            fig_bq = px.bar(
-                brand_quality, x="Brand", y="Avg Title Quality Score",
-                title="Average Title Quality Score by Brand",
-                color="Avg Title Quality Score", color_continuous_scale="Blues",
-            )
-            fig_bq.update_layout(
-                showlegend=False, xaxis_title="", yaxis_title="Score (0–100)", xaxis_tickangle=-30,
-            )
-            st.plotly_chart(fig_bq, use_container_width=True)
-
         st.dataframe(comp_cov_df, use_container_width=True, hide_index=True)
     else:
-        st.info("Unable to compute title quality scores — title column not found.")
+        st.info("Unable to analyse title attributes — title column not found.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1728,6 +1728,19 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
         "A category is 'present' if at least one relevant phrase appears in the description."
     )
 
+    # ── Examples expander — shown FIRST so clients understand the categories
+    # before viewing the analysis charts.
+    with st.expander("What does each messaging category mean? (click to expand)", expanded=False):
+        st.caption(
+            "Each category is detected when any matching phrase appears in the description. "
+            "Here are typical examples from each category:"
+        )
+        for cat, examples in MESSAGING_CATEGORY_EXAMPLES.items():
+            st.markdown(f"**{cat}**")
+            for ex in examples:
+                st.markdown(f"  - *{ex}*")
+            st.markdown("")
+
     # ── 4a: Social proof signals ───────────────────────────────────────────────
     st.markdown("**Trust & Social Proof Signals**")
     st.caption(
@@ -1796,18 +1809,6 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     )
     st.plotly_chart(fig_cat, use_container_width=True)
     st.dataframe(cat_df, use_container_width=True, hide_index=True)
-
-    # ── 4b-examples: What each messaging category means ────────────────────────
-    with st.expander("What does each messaging category mean? (click to expand)"):
-        st.caption(
-            "Each category is detected when any matching phrase appears in the description. "
-            "Here are typical examples from each category:"
-        )
-        for cat, examples in MESSAGING_CATEGORY_EXAMPLES.items():
-            st.markdown(f"**{cat}**")
-            for ex in examples:
-                st.markdown(f"  - *{ex}*")
-            st.markdown("")
 
     # ── 4c: Messaging breadth score distribution ───────────────────────────────
     st.markdown("**Messaging Breadth Score Distribution**")
@@ -1936,10 +1937,22 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     st.subheader("Description Quality Score")
     st.caption(
         "How well-structured are competitor descriptions? "
-        "Each listing is scored against seven content sections: Opening Claim, Feature Details, "
-        "Benefit Language, Safety & Materials, Age & Fit, Care & Usage, and Trust Signals. "
+        "Each listing is evaluated across seven content sections. "
         "A higher score means more complete, persuasive copy."
     )
+
+    # Pull real examples from the dataset before scoring — shown in expander
+    section_examples = extract_section_examples(df, text_col="description", n_examples=3)
+    with st.expander("What does each content section mean? (real examples from the dataset)", expanded=False):
+        st.caption("Each section is detected when any matching phrase appears in the description.")
+        for section, ex_list in section_examples.items():
+            st.markdown(f"**{section}**")
+            if ex_list:
+                for ex in ex_list:
+                    st.markdown(f'  - *"{ex}"*')
+            else:
+                st.markdown("  *No examples found in the current dataset.*")
+            st.markdown("")
 
     desc_quality_df = compute_description_quality_scores(df)
     if not desc_quality_df.empty:
