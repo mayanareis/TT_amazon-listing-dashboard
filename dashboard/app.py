@@ -77,6 +77,16 @@ TITLE_PHRASE_MAP: List[Tuple[str, str]] = [
     (r"\bfirst\s+flow\b",             "first_flow"),
     # Physical attributes
     (r"\bwide\s+neck\b",              "wide_neck"),
+    # Transition phrases
+    (r"\bbreast\s+to\s+bottle\b",     "breast_to_bottle"),
+    (r"\bbottle\s+to\s+breast\b",     "breast_to_bottle"),
+    # Cleaning / care
+    (r"\bself[-\s]+steriliz\w*\b",    "self_sterilizing"),
+    # Developmental
+    (r"\bseamless\s+transition\b",    "seamless_transition"),
+    # Sippy / training (captured so they don't split — excluded downstream)
+    (r"\bsippy\s+cup\b",              "sippy_cup"),
+    (r"\bsip\s+cup\b",                "sippy_cup"),
 ]
 
 # Used for description analysis — superset of title phrases plus
@@ -125,6 +135,22 @@ DESC_PHRASE_MAP: List[Tuple[str, str]] = [
     (r"\bwide\s+neck\b",               "wide_neck"),
     # Feeding position
     (r"\bupright\s+feeding\b",         "upright_feeding"),
+    # Transition phrases
+    (r"\bbreast\s+to\s+bottle\b",      "breast_to_bottle"),
+    (r"\bbottle\s+to\s+breast\b",      "breast_to_bottle"),
+    # Cleaning / care
+    (r"\bself[-\s]+steriliz\w*\b",     "self_sterilizing"),
+    # Developmental
+    (r"\bseamless\s+transition\b",     "seamless_transition"),
+    # Colic / vent system
+    (r"\bvent\s+system\b",             "vent_system"),
+    (r"\banti[-\s]?colic\s+system\b",  "anti_colic_system"),
+    # Material-led phrases
+    (r"\bsoft\s+nipple\b",             "soft_nipple"),
+    (r"\bnatural\s+nipple\b",          "natural_nipple"),
+    # Sippy / training (captured so they don't split — excluded downstream)
+    (r"\bsippy\s+cup\b",               "sippy_cup"),
+    (r"\bsip\s+cup\b",                 "sippy_cup"),
 ]
 
 
@@ -154,10 +180,13 @@ TITLE_STOPWORDS: set = {
     "month", "months",
     # Quantity noise
     "pack", "set", "piece", "pieces", "product",
-    # Brand-name fragments — individual words that leak out when a brand name
-    # is not caught by the phrase map (e.g. if spacing/punctuation varies).
-    # The full brand tokens (tommee_tippee, dr_browns) are kept via phrase map.
+    # Brand-name fragments — ALL individual brand words must be here so they
+    # never surface as keywords. Compound brand tokens (e.g. tommee_tippee) are
+    # handled separately via BRAND_TOKENS below.
     "tommee", "tippee", "brown", "dr",
+    "philips", "avent", "nuk", "evenflo", "mam",
+    "comotomo", "nanobebe", "lansinoh", "medela",
+    "chicco", "playtex", "gerber", "first", "years",
 }
 
 # Description stopwords: heavier filtering for the longer prose found in
@@ -184,6 +213,9 @@ DESC_STOPWORDS: set = {
     "oz", "ml",
     # Brand-name fragments — same logic as TITLE_STOPWORDS
     "tommee", "tippee", "brown", "dr",
+    "philips", "avent", "nuk", "evenflo", "mam",
+    "comotomo", "nanobebe", "lansinoh", "medela",
+    "chicco", "playtex", "gerber", "first", "years",
 }
 
 
@@ -223,6 +255,173 @@ LABEL_OVERRIDES: dict = {
 }
 
 
+# Compound brand tokens produced by the phrase maps that must NEVER appear
+# as keywords in any frequency chart. The phrase maps still need these patterns
+# to prevent brand words from splitting into meaningless fragments — but the
+# resulting tokens are blocked here before they reach the output.
+BRAND_TOKENS: set = {
+    # Brand compound tokens — must never appear as keywords
+    "tommee_tippee", "dr_browns", "dr_brown",
+    "philips_avent", "evenflo", "first_years",
+    "mam", "nuk", "comotomo", "nanobebe",
+    "lansinoh", "medela", "chicco", "playtex", "gerber",
+    # Product-type tokens for excluded categories (sippy cups etc.)
+    # Matched in phrase map to avoid splitting but not shown as keywords
+    "sippy_cup",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BRAND NORMALIZATION MAP
+# Applied once at load time to canonicalize raw brand strings.
+# Prevents compound brand names (e.g. "Dr. Brown's" / "Dr Browns") from
+# appearing as separate entries in charts and filters.
+# ══════════════════════════════════════════════════════════════════════════════
+BRAND_NORMALIZATION_MAP: List[Tuple[str, str]] = [
+    # (case-insensitive regex, canonical brand name)  — most specific first
+    (r"tommee\s+tippee",        "Tommee Tippee"),
+    (r"dr\.?\s+brown'?s?",      "Dr. Brown's"),
+    (r"philips\s+avent",        "Philips Avent"),
+    (r"evenflo\s+feeding",      "Evenflo"),
+    (r"the\s+first\s+years?",   "The First Years"),
+    (r"\bfirst\s+years?\b",     "The First Years"),
+    (r"\bmam\b",                "MAM"),
+    (r"\bnuk\b",                "NUK"),
+    (r"comotomo",               "Comotomo"),
+    (r"nanobebe",               "Nanobebe"),
+    (r"lansinoh",               "Lansinoh"),
+    (r"medela",                 "Medela"),
+    (r"chicco",                 "Chicco"),
+    (r"playtex",                "Playtex"),
+    (r"gerber",                 "Gerber"),
+]
+
+
+def normalize_brand(raw_brand: str) -> str:
+    """Return a canonical brand name from a raw brand string.
+
+    Applies BRAND_NORMALIZATION_MAP to consolidate variants like
+    'Dr. Brown's' / 'Dr Browns' / 'dr brown' → 'Dr. Brown's'.
+    Falls back to title-casing the raw value if no pattern matches.
+    """
+    if not isinstance(raw_brand, str) or not raw_brand.strip():
+        return "Unknown"
+    b = raw_brand.strip()
+    for pattern, canonical in BRAND_NORMALIZATION_MAP:
+        if re.search(pattern, b, flags=re.IGNORECASE):
+            return canonical
+    return b.title() if b else "Unknown"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TITLE COMPONENT PATTERNS
+# Used to detect how many structural elements a title contains.
+# Title Quality Score = (components detected / total components) × 100.
+# ══════════════════════════════════════════════════════════════════════════════
+# Title Quality Score components — tuned specifically for baby bottles and
+# bottle nipples. Each component is weighted equally (1 point each).
+# Brand names are intentionally absent — scores reflect product language only,
+# not how frequently a brand appears in the dataset.
+TITLE_COMPONENTS: dict = {
+    # Core product type — bottle or nipple only (sippy cups excluded)
+    "Product Type":  r"\b(?:bottle|bottles?|nipple|nipples?)\b",
+    # Flow rate — primary differentiator for nipples
+    "Flow Rate":     r"\b(?:slow\s+flow|medium\s+flow|fast\s+flow|first\s+flow|variable\s+flow|newborn\s+flow)\b",
+    # Anti-colic — a key purchase driver in this category
+    "Anti-Colic":    r"\b(?:anti[-\s]?colic|vented?|vent\s+system|airfree|air[-\s]free)\b",
+    # Size or volume (oz, ml)
+    "Size / Volume": r"\b\d+\s*(?:oz|ml|fl\.?\s*oz)\b",
+    # Pack quantity — value signal
+    "Quantity":      r"\b(?:\d+\s*[-–]?\s*(?:pack|count|ct\b)|pack\s+of\s+\d+|set\s+of\s+\d+|\d+\s+(?:bottles?|nipples?))\b",
+    # Material or safety claim
+    "Material":      r"\b(?:glass|silicone|stainless|steel|bpa[-\s]?free|ppsu|tritan)\b",
+    # Compatibility claim
+    "Compatibility": r"\b(?:compatible\s+with|works\s+with|fits\s+(?:most|all)?|universal)\b",
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FEATURE vs BENEFIT LANGUAGE PATTERNS
+# Feature language = what the product has/is made of (specs-led).
+# Benefit language = what the product does for the customer (outcome-led).
+# Used to estimate each listing's messaging orientation.
+# ══════════════════════════════════════════════════════════════════════════════
+FEATURE_LANGUAGE_PATTERNS: List[str] = [
+    r"\bmade\s+(?:of|from|with)\b",
+    r"\bconstructed\s+(?:of|from)\b",
+    r"\bfeatures?\b",
+    r"\bincludes?\b",
+    r"\bequipped\s+with\b",
+    r"\bcomes?\s+with\b",
+    r"\bbuilt[-\s]in\b",
+    r"\bmaterial[s]?\b",
+    r"\bcomponent[s]?\b",
+    r"\bdimension[s]?\b",
+    r"\b\d+\s*(?:oz|ml)\b",
+    r"\b\d+\s*[-–]?\s*(?:pack|count)\b",
+]
+
+BENEFIT_LANGUAGE_PATTERNS: List[str] = [
+    r"\bhelps?\s+(?:reduce|prevent|soothe|calm|ease|avoid|eliminate)\b",
+    r"\breduces?\b",
+    r"\bprevents?\b",
+    r"\bsoothes?\b",
+    r"\bcomfort\b",
+    r"\bso\s+(?:you|baby|your\s+baby)\s+can\b",
+    r"\bgiving\s+(?:your|baby)\b",
+    r"\bpeace\s+of\s+mind\b",
+    r"\bworry[-\s]free\b",
+    r"\bno\s+more\b",
+    r"\bmakes?\s+it\s+(?:easy|easier|simple)\b",
+    r"\bperfect\s+for\b",
+    r"\bideal\s+for\b",
+    r"\bdesigned\s+to\s+(?:help|reduce|prevent|ease|support)\b",
+    r"\bensures?\b",
+    r"\bpromotes?\b",
+    r"\bencourages?\b",
+    r"\bprovides?\s+(?:comfort|relief|support)\b",
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DESCRIPTION SECTION PATTERNS
+# Detect whether descriptions include key marketing copy sections.
+# Description Quality Score = sections covered / total sections × 100.
+# ══════════════════════════════════════════════════════════════════════════════
+DESC_SECTION_PATTERNS: dict = {
+    "Opening Claim":    [
+        r"\bdesigned\s+(?:for|to)\b", r"\bperfect\s+for\b", r"\bideal\s+for\b",
+        r"\bintroducing\b", r"\bthe\s+(?:best|ultimate|only)\b",
+    ],
+    "Feature Details":  [
+        r"\bfeatures?\b", r"\bincludes?\b", r"\bequipped\s+with\b",
+        r"\bcomes?\s+with\b", r"\bbuilt[-\s]in\b",
+    ],
+    "Benefit Language": [
+        r"\bhelps?\s+\w+", r"\breduces?\b", r"\bprevents?\b",
+        r"\bsoothes?\b", r"\bcomfort\b", r"\bpeace\s+of\s+mind\b", r"\bno\s+more\b",
+    ],
+    "Safety & Materials": [
+        r"\bbpa[-\s]?free\b", r"\bfood[-\s]grade\b", r"\bnon[-\s]?toxic\b",
+        r"\bfda\b", r"\bhypoallergenic\b",
+    ],
+    "Age & Fit":        [
+        r"\b(?:newborn|infant|0\+?\s*m(?:onths?)?|\d+\+?\s*m(?:onths?)?)\b",
+        r"\bsuitable\s+for\b", r"\bcompatible\s+with\b", r"\bworks\s+with\b",
+    ],
+    "Care & Usage":     [
+        r"\bdishwasher[-\s]?safe\b", r"\beasy[-\s](?:to[-\s])?clean\b",
+        r"\bsteriliz\w+\b", r"\bhow\s+to\s+use\b", r"\bwash\s+before\b",
+    ],
+    "Trust Signals":    [
+        r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",
+        r"\brecommended\s+by\b", r"\bclinically\b",
+        r"\baward\b", r"\btrusted\b", r"\bmillion\w*\s+(?:of\s+)?moms?\b",
+        r"\bpediatrician\b",
+    ],
+}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MESSAGING CATEGORIES
 # Used by the Description Messaging Structure analysis.
@@ -231,7 +430,7 @@ LABEL_OVERRIDES: dict = {
 # ══════════════════════════════════════════════════════════════════════════════
 MESSAGING_CATEGORIES: dict = {
     "Social Proof": [
-        r"\b#\s*1\s+brand\b",
+        r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",  # #1 brand / No.1 brand / number one brand
         r"\brecommended\s+by\s+(moms?|doctors?|pediatricians?)\b",
         r"\bsurvey\b",
         r"\bclinically\s+tested\b",
@@ -293,10 +492,53 @@ MESSAGING_CATEGORIES: dict = {
     ],
 }
 
+# Client-facing example phrases shown alongside each messaging category
+# in the dashboard. These help clients understand what each category means
+# without needing to see the underlying regex patterns.
+MESSAGING_CATEGORY_EXAMPLES: dict = {
+    "Social Proof": [
+        "#1 brand recommended by moms",
+        "trusted by millions of parents",
+        "award-winning design",
+        "recommended by pediatricians",
+    ],
+    "Safety Claims": [
+        "BPA-free materials",
+        "FDA-approved",
+        "food-grade silicone",
+        "non-toxic and hypoallergenic",
+    ],
+    "Comfort Claims": [
+        "reduces colic and gas",
+        "breast-like feel for natural latch",
+        "anti-colic vent system",
+        "gentle on baby's tummy",
+    ],
+    "Convenience Claims": [
+        "dishwasher safe — top rack",
+        "easy to clean, just 4 parts",
+        "leak-proof design",
+        "travel-friendly",
+    ],
+    "Design Claims": [
+        "wide neck for easy filling",
+        "soft silicone nipple",
+        "ergonomic grip",
+        "compact and lightweight",
+    ],
+    "Research / Survey Claims": [
+        "clinically tested to reduce colic",
+        "recommended by pediatricians",
+        "proven by survey of 300 moms",
+        "scientifically designed",
+    ],
+}
+
+
 # Specific social proof phrases for fine-grained detection within the
 # "Social Proof" category above.
 SOCIAL_PROOF_PATTERNS: dict = {
-    "#1 Brand":                  r"\b#\s*1\s+brand\b",
+    "#1 Brand":                  r"(?:#\s*1|no\.?\s*1|number\s+one|no\s+1)\s+brand",
     "Recommended by Moms":       r"\brecommended\s+by\s+moms?\b",
     "Recommended by Doctors":    r"\brecommended\s+by\s+doctors?\b",
     "Clinically Tested":         r"\bclinically\s+tested\b",
@@ -384,8 +626,12 @@ def extract_keyword_frequencies(
 
         for tok in raw_tokens:
             if "_" in tok:
-                # Step 3a — phrase token: always keep (no stopword check)
-                all_tokens.append(tok)
+                # Step 3a — phrase token: keep unless it is a brand name.
+                # Brand compound tokens (e.g. tommee_tippee) are needed in the
+                # phrase map to prevent word-splitting, but should never surface
+                # as keywords — they reflect brand frequency, not product language.
+                if tok not in BRAND_TOKENS:
+                    all_tokens.append(tok)
             elif tok not in stopwords and len(tok) > 2:
                 # Step 3b — plain word: apply stopword + length filter
                 all_tokens.append(tok)
@@ -730,6 +976,185 @@ def render_image_grid(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PRODUCT CATEGORY FILTER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def filter_bottles_and_nipples(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only baby bottle and bottle nipple listings.
+
+    All keyword, phrase, scoring, and messaging analysis should run on this
+    filtered subset to prevent sippy cups, warmers, sterilizers, and other
+    accessories from skewing insights intended for the core bottle/nipple category.
+
+    Inclusion rule: title or breadcrumbs contains 'bottle' or 'nipple'.
+    Exclusion rule: title or breadcrumbs explicitly marks the product as a
+    sippy cup, straw cup, warmer, sterilizer, or pacifier.
+    """
+    if df.empty:
+        return df
+
+    title_lc = df.get("title", pd.Series(dtype=str)).fillna("").str.lower()
+    bc_lc     = df.get("breadcrumbs", pd.Series(dtype=str)).fillna("").str.lower()
+
+    is_target = (
+        title_lc.str.contains(r"\b(?:bottle|nipple)\b", regex=True)
+        | bc_lc.str.contains(r"\b(?:bottle|nipple)\b", regex=True)
+    )
+    is_excluded = (
+        title_lc.str.contains(r"\b(?:sippy|straw\s+cup|warmer|steriliz|pacifier|trainer\s+cup)\b", regex=True)
+        | bc_lc.str.contains(r"\b(?:sippy|warmer|steriliz|pacifier)\b", regex=True)
+    )
+
+    return df[is_target & ~is_excluded].copy()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TITLE & DESCRIPTION QUALITY SCORING
+# ══════════════════════════════════════════════════════════════════════════════
+
+def compute_title_quality_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """Score each product title across TITLE_COMPONENTS.
+
+    Returns a DataFrame with one binary column per component, a
+    title_quality_score (0–100), and brand if available.
+    Score logic: each detected component contributes equal weight.
+    """
+    title_col = "title" if "title" in df.columns else None
+    if title_col is None or df.empty:
+        return pd.DataFrame()
+
+    text = df[title_col].fillna("").astype(str)
+    result = pd.DataFrame(index=df.index)
+
+    for component, pattern in TITLE_COMPONENTS.items():
+        result[component] = text.str.contains(
+            pattern, flags=re.IGNORECASE, regex=True
+        ).astype(int)
+
+    n_components = len(TITLE_COMPONENTS)
+    result["title_quality_score"] = (
+        result[list(TITLE_COMPONENTS.keys())].sum(axis=1) / n_components * 100
+    ).round(1)
+
+    if "brand" in df.columns:
+        result["brand"] = df["brand"].values
+
+    return result
+
+
+def compute_description_quality_scores(df: pd.DataFrame) -> pd.DataFrame:
+    """Score each description across DESC_SECTION_PATTERNS.
+
+    Returns a DataFrame with one binary column per section, a
+    description_quality_score (0–100), and brand if available.
+    Score logic: each section present contributes equal weight.
+    """
+    if "description" not in df.columns or df.empty:
+        return pd.DataFrame()
+
+    text = df["description"].fillna("").astype(str)
+    result = pd.DataFrame(index=df.index)
+
+    for section, patterns in DESC_SECTION_PATTERNS.items():
+        combined = "|".join(f"(?:{p})" for p in patterns)
+        result[section] = text.str.contains(
+            combined, flags=re.IGNORECASE, regex=True
+        ).astype(int)
+
+    n_sections = len(DESC_SECTION_PATTERNS)
+    result["description_quality_score"] = (
+        result[list(DESC_SECTION_PATTERNS.keys())].sum(axis=1) / n_sections * 100
+    ).round(1)
+
+    if "brand" in df.columns:
+        result["brand"] = df["brand"].values
+
+    return result
+
+
+def compute_feature_benefit_balance(
+    df: pd.DataFrame, text_col: str = "description"
+) -> pd.DataFrame:
+    """Estimate whether each listing leans toward feature or benefit language.
+
+    Uses pattern matching heuristics (not NLP). Returns a DataFrame with:
+      - feature_hits: number of feature-language patterns matched
+      - benefit_hits: number of benefit-language patterns matched
+      - orientation:  'Feature-Led', 'Benefit-Led', 'Balanced', or 'No Signal'
+
+    Threshold: one side must be 1.5× the other to be classified as 'led'.
+    """
+    if text_col not in df.columns or df.empty:
+        return pd.DataFrame()
+
+    text = df[text_col].fillna("").astype(str)
+    result = pd.DataFrame(index=df.index)
+
+    result["feature_hits"] = sum(
+        text.str.contains(p, flags=re.IGNORECASE, regex=True).astype(int)
+        for p in FEATURE_LANGUAGE_PATTERNS
+    )
+    result["benefit_hits"] = sum(
+        text.str.contains(p, flags=re.IGNORECASE, regex=True).astype(int)
+        for p in BENEFIT_LANGUAGE_PATTERNS
+    )
+
+    def _classify(row: pd.Series) -> str:
+        f, b = row["feature_hits"], row["benefit_hits"]
+        if f == 0 and b == 0:
+            return "No Signal"
+        if f > b * 1.5:
+            return "Feature-Led"
+        if b > f * 1.5:
+            return "Benefit-Led"
+        return "Balanced"
+
+    result["orientation"] = result.apply(_classify, axis=1)
+
+    if "brand" in df.columns:
+        result["brand"] = df["brand"].values
+
+    return result
+
+
+def build_differentiation_insights(
+    claims_df: pd.DataFrame, total_listings: int
+) -> dict:
+    """Categorize claims by market saturation level.
+
+    Returns a dict with three lists:
+      'saturated'       — claims in ≥60% of listings (market standard)
+      'differentiating' — claims in 20–59% of listings (notable but not universal)
+      'underused'       — claims present but in <20% of listings (white space)
+
+    Each entry is {'claim': str, 'pct': float, 'listings': int}.
+    """
+    if claims_df.empty or total_listings == 0:
+        return {"saturated": [], "differentiating": [], "underused": []}
+
+    saturated, differentiating, underused = [], [], []
+    for _, row in claims_df.iterrows():
+        pct = row["listings"] / total_listings * 100
+        entry = {
+            "claim":    row["claim"],
+            "pct":      round(pct, 1),
+            "listings": int(row["listings"]),
+        }
+        if pct >= 60:
+            saturated.append(entry)
+        elif pct >= 20:
+            differentiating.append(entry)
+        elif row["listings"] > 0:
+            underused.append(entry)
+
+    return {
+        "saturated":       sorted(saturated,       key=lambda x: -x["pct"]),
+        "differentiating": sorted(differentiating, key=lambda x: -x["pct"]),
+        "underused":       sorted(underused,       key=lambda x: -x["pct"]),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -759,6 +1184,12 @@ def load_data(path: Path) -> pd.DataFrame:
     # ── 2. Rename thumbnail column produced by clean_data.py (all lowercase)
     if "thumbnailimage" in df.columns:
         df.rename(columns={"thumbnailimage": "thumbnailImage"}, inplace=True)
+
+    # ── 2b. Normalize brand names — consolidates variants like "Dr. Brown's" /
+    # "Dr Browns" / "dr brown" into a single canonical name so brand charts
+    # and filters are clean. Unknown/empty brands become "Unknown".
+    if "brand" in df.columns:
+        df["brand"] = df["brand"].apply(normalize_brand)
 
     # ── 3. Restrict to baby products only.
     # The breadcrumbs column (may be stored as "breadcrumbs" after clean_data.py
@@ -848,7 +1279,7 @@ def apply_sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def tab_overview(df: pd.DataFrame) -> None:
-    """Render the Overview tab: KPI metrics and brand distribution charts."""
+    """Render the Overview tab: KPI metrics, summary callout, and brand distribution charts."""
     st.header("Market Overview")
     st.caption("A high-level snapshot of the competitive landscape across all filtered products.")
 
@@ -865,10 +1296,29 @@ def tab_overview(df: pd.DataFrame) -> None:
     avg_price = df["price_value"].mean() if "price_value" in df.columns else np.nan
     c4.metric("Avg Price", f"${avg_price:.2f}" if pd.notna(avg_price) else "N/A")
 
+    # ── Market snapshot callout ─────────────────────────────────────────────
+    if "brand" in df.columns:
+        n_brands = df["brand"].nunique()
+        top_brand = df["brand"].value_counts().idxmax() if len(df) > 0 else "N/A"
+        top_brand_pct = round(df["brand"].value_counts().max() / max(len(df), 1) * 100)
+
+        callout_parts = [f"**{n_brands} brands** compete in this dataset"]
+        callout_parts.append(
+            f"**{top_brand}** leads on product count ({top_brand_pct}% of listings)"
+        )
+        if pd.notna(avg_rating):
+            callout_parts.append(f"average category rating is **{avg_rating:.1f} \u2605**")
+
+        st.info("  ·  ".join(callout_parts))
+
     st.divider()
 
     # ── Brand distribution
-    st.subheader("Brand Distribution")
+    st.subheader("Brand Landscape")
+    st.caption(
+        "Which brands have the most products listed, and which have accumulated the most "
+        "customer reviews — a proxy for market presence and validated demand."
+    )
     if "brand" not in df.columns:
         st.info("No 'brand' column found.")
         return
@@ -882,10 +1332,10 @@ def tab_overview(df: pd.DataFrame) -> None:
         )
         fig = px.bar(
             brand_count, x="brand", y="products",
-            title="Top 15 Brands by Product Count",
+            title="Top 15 Brands by Number of Products",
             color="products", color_continuous_scale="Blues",
         )
-        fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Products", xaxis_tickangle=-30)
+        fig.update_layout(showlegend=False, xaxis_title="", yaxis_title="Products Listed", xaxis_tickangle=-30)
         st.plotly_chart(fig, use_container_width=True)
 
     with right:
@@ -905,6 +1355,7 @@ def tab_overview(df: pd.DataFrame) -> None:
             st.info("reviewsCount column not found.")
 
 
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: TITLE INTELLIGENCE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -916,21 +1367,34 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
         1. Top keywords / phrases — phrase-aware bar chart + frequency table
         2. Title length distribution — histogram with median marker
         3. Top listing title examples — top-15 sorted by reviewsCount
+        4. Title Structure & Quality
     """
     st.header("Title Intelligence")
     st.caption(
         "Uncover patterns in how competitors write product titles — "
-        "keyword choices, phrase usage, length strategy, and top-performing examples."
+        "keyword choices, phrase usage, length strategy, and quality scoring. "
+        "Analysis is scoped to **baby bottles and bottle nipples** only."
     )
+
+    # Apply category filter — analysis scoped to bottles and nipples only
+    df = filter_bottles_and_nipples(df)
+    if df.empty:
+        st.warning("No baby bottle or nipple listings found with the current filters.")
+        return
+
+    n_filtered = len(df)
+    st.caption(f"Analysing **{n_filtered:,} baby bottle / nipple listings**.")
 
     # Prefer the lowercased clean_title for cleaner tokenization
     title_col = "clean_title" if "clean_title" in df.columns else "title"
 
-    # ── Section 1: Keyword / phrase frequency ─────────────────────────────────
-    st.subheader("Top Keywords and Phrases in Competitor Titles")
+    # ── Section 1: Top title keywords & phrases ───────────────────────────────
+    st.subheader("Top Title Keywords & Phrases")
     st.caption(
+        "The most common keywords and phrases used across product titles. "
         "Multi-word phrases like 'Anti Colic' or 'BPA Free' are grouped as single concepts "
-        "before counting, so they appear as meaningful units rather than split individual words."
+        "so they appear as meaningful signals rather than split individual words. "
+        "Brand names are excluded — this focuses on product features, benefits, and claims."
     )
 
     if title_col in df.columns:
@@ -946,21 +1410,20 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
                 kw_df,
                 x="keyword",
                 y="frequency",
-                title="Most Frequent Keywords and Phrases in Competitor Titles",
+                title="Top Title Keywords & Phrases (Baby Bottles & Nipples)",
                 color="frequency",
                 color_continuous_scale="Teal",
             )
             fig_kw.update_layout(
                 showlegend=False,
                 xaxis_title="Keyword / Phrase",
-                yaxis_title="Frequency",
+                yaxis_title="Number of Titles",
                 xaxis_tickangle=-35,
             )
             st.plotly_chart(fig_kw, use_container_width=True)
 
-            # Small companion table for exact counts
             st.dataframe(
-                kw_df.rename(columns={"keyword": "Keyword / Phrase", "frequency": "Frequency"}),
+                kw_df.rename(columns={"keyword": "Keyword / Phrase", "frequency": "Titles Containing It"}),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -998,10 +1461,10 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
     st.divider()
 
     # ── Section 3: Top listing title examples ─────────────────────────────────
-    st.subheader("Top Listing Title Examples")
+    st.subheader("Top-Performing Title Examples")
     st.caption(
-        "Top 15 competitor listings sorted by review count — "
-        "these are the titles that have driven the most customer engagement."
+        "The 15 highest-reviewed listings in the dataset — "
+        "titles with the most customer validation."
     )
 
     if "title" in df.columns:
@@ -1016,7 +1479,6 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
             .head(15)
             .reset_index(drop=True)
         )
-        # Configure column display labels and formats
         col_cfg: dict = {}
         if "stars" in examples.columns:
             col_cfg["stars"] = st.column_config.NumberColumn("Rating", format="%.1f \u2605")
@@ -1029,6 +1491,102 @@ def tab_title_intelligence(df: pd.DataFrame) -> None:
     else:
         st.info("Title column not found.")
 
+    st.divider()
+
+    # ── Section 4: Title Structure & Quality ──────────────────────────────────
+    st.subheader("Title Structure & Quality")
+    st.caption(
+        "A well-structured title signals trust and helps shoppers make faster decisions. "
+        "The **Title Quality Score** (0–100) reflects how many key components each title includes: "
+        "product type, a standout feature, material, size, quantity, age/stage, and flow rate."
+    )
+
+    title_scores_df = compute_title_quality_scores(df)
+
+    if not title_scores_df.empty:
+        avg_title_score = title_scores_df["title_quality_score"].mean()
+
+        # Component coverage bar chart
+        total = max(len(df), 1)
+        comp_coverage_rows = []
+        for component in TITLE_COMPONENTS:
+            if component in title_scores_df.columns:
+                count = int(title_scores_df[component].sum())
+                comp_coverage_rows.append({
+                    "Title Component":      component,
+                    "Titles Including It":  count,
+                    "% of Titles":          round(count / total * 100, 1),
+                })
+        comp_cov_df = (
+            pd.DataFrame(comp_coverage_rows)
+            .sort_values("% of Titles", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        fig_comp_cov = px.bar(
+            comp_cov_df, x="Title Component", y="% of Titles",
+            title="Title Component Coverage — How Many Titles Include Each Element?",
+            color="% of Titles", color_continuous_scale="Teal",
+        )
+        fig_comp_cov.update_layout(
+            showlegend=False, xaxis_title="", yaxis_title="% of Titles", xaxis_tickangle=-20,
+        )
+        st.plotly_chart(fig_comp_cov, use_container_width=True)
+
+        # KPI row
+        least_covered = comp_cov_df.iloc[-1] if not comp_cov_df.empty else None
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Avg Title Quality Score", f"{avg_title_score:.0f} / 100")
+        if least_covered is not None:
+            c2.metric(
+                "Most Missing Component",
+                least_covered["Title Component"],
+                help=f"Only {least_covered['% of Titles']:.0f}% of titles include this.",
+            )
+        high_quality = int((title_scores_df["title_quality_score"] >= 57).sum())
+        c3.metric(
+            "Titles Covering 4+ Components",
+            f"{high_quality:,}",
+            help="Listings that include at least 4 of the 7 tracked components.",
+        )
+
+        # Score distribution histogram
+        fig_tqs = px.histogram(
+            title_scores_df, x="title_quality_score", nbins=15,
+            title="Title Quality Score Distribution",
+            color_discrete_sequence=["#4A90D9"],
+        )
+        fig_tqs.update_layout(
+            xaxis_title="Title Quality Score (0–100)", yaxis_title="Number of Products",
+        )
+        fig_tqs.add_vline(
+            x=avg_title_score, line_dash="dash", line_color="red",
+            annotation_text=f"Avg: {avg_title_score:.0f}",
+        )
+        st.plotly_chart(fig_tqs, use_container_width=True)
+
+        # Brand-level title quality
+        if "brand" in title_scores_df.columns:
+            brand_quality = (
+                title_scores_df.groupby("brand")["title_quality_score"]
+                .mean().round(1).sort_values(ascending=False)
+                .reset_index().head(15)
+                .rename(columns={"brand": "Brand", "title_quality_score": "Avg Title Quality Score"})
+            )
+            fig_bq = px.bar(
+                brand_quality, x="Brand", y="Avg Title Quality Score",
+                title="Average Title Quality Score by Brand",
+                color="Avg Title Quality Score", color_continuous_scale="Blues",
+            )
+            fig_bq.update_layout(
+                showlegend=False, xaxis_title="", yaxis_title="Score (0–100)", xaxis_tickangle=-30,
+            )
+            st.plotly_chart(fig_bq, use_container_width=True)
+
+        st.dataframe(comp_cov_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Unable to compute title quality scores — title column not found.")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: DESCRIPTION INTELLIGENCE
@@ -1038,25 +1596,39 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     """Render the Description Intelligence tab.
 
     Sections:
-        1. Top keywords / themes — phrase-aware bar chart + table
-        2. Marketing claims frequency — listing-level presence detection
+        1. Top messaging themes
+        2. Common product claims
         3. Description length distribution
+        4. Messaging category coverage
+        5. Description quality score
+        6. Feature vs benefit balance
+        7. Competitive differentiation opportunities
     """
     st.header("Description Intelligence")
     st.caption(
         "What language and persuasion tactics are competitors using? "
-        "Find the themes, claims, and length patterns that define the category."
+        "Find the themes, claims, and quality patterns that define the category. "
+        "Analysis is scoped to **baby bottles and bottle nipples** only."
     )
+
+    # Apply category filter — analysis scoped to bottles and nipples only
+    df = filter_bottles_and_nipples(df)
+    if df.empty:
+        st.warning("No baby bottle or nipple listings found with the current filters.")
+        return
+
+    st.caption(f"Analysing **{len(df):,} baby bottle / nipple listings**.")
 
     if "description" not in df.columns:
         st.error("No 'description' column found. Re-run scripts/clean_data.py.")
         return
 
-    # ── Section 1: Theme / keyword extraction ─────────────────────────────────
-    st.subheader("Most Frequent Keywords and Claims in Descriptions")
+    # ── Section 1: Top messaging themes ───────────────────────────────────────
+    st.subheader("Top Messaging Themes")
     st.caption(
-        "Multi-word phrases are preserved as single concepts before counting. "
-        "Generic filler words are excluded to surface meaningful signals."
+        "The most common language used across competitor descriptions. "
+        "Multi-word phrases are treated as single concepts — so 'Anti Colic' and "
+        "'BPA Free' count as whole ideas rather than scattered individual words."
     )
 
     desc_kw_df = extract_keyword_frequencies(
@@ -1069,33 +1641,32 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     if not desc_kw_df.empty:
         fig_themes = px.bar(
             desc_kw_df, x="keyword", y="frequency",
-            title="Most Frequent Keywords and Claims in Descriptions",
+            title="Most Common Themes in Product Descriptions",
             color="frequency", color_continuous_scale="Greens",
         )
         fig_themes.update_layout(
             showlegend=False,
-            xaxis_title="Theme / Keyword",
-            yaxis_title="Frequency",
+            xaxis_title="",
+            yaxis_title="Number of Descriptions",
             xaxis_tickangle=-35,
         )
         st.plotly_chart(fig_themes, use_container_width=True)
 
-        # Companion table
         st.dataframe(
-            desc_kw_df.rename(columns={"keyword": "Theme / Keyword", "frequency": "Frequency"}),
+            desc_kw_df.rename(columns={"keyword": "Messaging Theme", "frequency": "Descriptions Containing It"}),
             use_container_width=True,
             hide_index=True,
         )
     else:
-        st.info("No description keywords found after filtering stopwords.")
+        st.info("No description themes found after filtering stopwords.")
 
     st.divider()
 
-    # ── Section 2: Marketing claims — listing-level presence ──────────────────
-    st.subheader("Marketing Claims Frequency")
+    # ── Section 2: Common product claims ──────────────────────────────────────
+    st.subheader("Common Product Claims")
     st.caption(
-        "How many distinct listings include each marketing claim in their description? "
-        "Each listing is counted once regardless of how many times a claim appears."
+        "How many listings explicitly make each claim in their description? "
+        "Each listing is counted once per claim, regardless of repetition."
     )
 
     claims_df = build_claim_presence(df, "description", CLAIM_MAP)
@@ -1104,25 +1675,24 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     if not active_claims.empty:
         fig_claims = px.bar(
             active_claims, x="claim", y="listings",
-            title="Marketing Claims Frequency (Listings Containing Each Claim)",
+            title="How Often Each Product Claim Appears Across Listings",
             color="listings", color_continuous_scale="Reds",
         )
         fig_claims.update_layout(
             showlegend=False,
-            xaxis_title="Claim",
+            xaxis_title="",
             yaxis_title="Number of Listings",
             xaxis_tickangle=-20,
         )
         st.plotly_chart(fig_claims, use_container_width=True)
 
-        # Table with percentage column for client-facing reporting
         st.dataframe(
-            active_claims.rename(columns={"claim": "Marketing Claim", "listings": "Listings"}),
+            active_claims.rename(columns={"claim": "Product Claim", "listings": "Listings", "% of Products": "% of All Products"}),
             use_container_width=True,
             hide_index=True,
         )
     else:
-        st.info("No marketing claims detected across descriptions.")
+        st.info("No product claims detected across descriptions.")
 
     st.divider()
 
@@ -1151,19 +1721,18 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
 
     st.divider()
 
-    # ── Section 4: Description Messaging Structure ─────────────────────────────
-    st.subheader("Description Messaging Structure")
+    # ── Section 4: Messaging Category Coverage ─────────────────────────────────
+    st.subheader("Messaging Category Coverage")
     st.caption(
-        "How descriptions are constructed across six strategic messaging categories. "
-        "Each listing is scored binary per category — present if any matching phrase "
-        "appears, absent otherwise."
+        "Which strategic messaging categories do competitor descriptions cover? "
+        "A category is 'present' if at least one relevant phrase appears in the description."
     )
 
     # ── 4a: Social proof signals ───────────────────────────────────────────────
-    st.markdown("**Social Proof Signals**")
+    st.markdown("**Trust & Social Proof Signals**")
     st.caption(
-        "How often do listings use specific social proof phrases "
-        "such as '#1 brand', 'recommended by moms', or 'clinically tested'?"
+        "How often do listings use specific trust phrases — "
+        "such as '#1 Brand', 'Recommended by Moms', or 'Clinically Tested'?"
     )
     sp_rows = []
     for phrase, pattern in SOCIAL_PROOF_PATTERNS.items():
@@ -1195,10 +1764,10 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
         st.info("No social proof signals detected in descriptions with current filters.")
 
     # ── 4b: Messaging category coverage across all listings ────────────────────
-    st.markdown("**Messaging Category Coverage (All Listings)**")
+    st.markdown("**Category Coverage Across All Listings**")
     st.caption(
-        "What percentage of listings include language from each messaging category? "
-        "A category is marked present if any of its patterns match in the description."
+        "What share of listings use language from each messaging category? "
+        "Categories with lower coverage may represent opportunities for stronger positioning."
     )
     cat_rows = []
     for category, patterns in MESSAGING_CATEGORIES.items():
@@ -1228,23 +1797,34 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     st.plotly_chart(fig_cat, use_container_width=True)
     st.dataframe(cat_df, use_container_width=True, hide_index=True)
 
-    # ── 4c: Claim coverage score distribution ──────────────────────────────────
-    st.markdown("**Claim Coverage Score Distribution**")
+    # ── 4b-examples: What each messaging category means ────────────────────────
+    with st.expander("What does each messaging category mean? (click to expand)"):
+        st.caption(
+            "Each category is detected when any matching phrase appears in the description. "
+            "Here are typical examples from each category:"
+        )
+        for cat, examples in MESSAGING_CATEGORY_EXAMPLES.items():
+            st.markdown(f"**{cat}**")
+            for ex in examples:
+                st.markdown(f"  - *{ex}*")
+            st.markdown("")
+
+    # ── 4c: Messaging breadth score distribution ───────────────────────────────
+    st.markdown("**Messaging Breadth Score Distribution**")
     st.caption(
-        "Each listing receives a score from 0–100 based on how many of the six "
-        "messaging categories appear in its description. "
-        "100 = all six categories covered."
+        "Each listing is scored 0–100 based on how many of the six messaging categories "
+        "its description covers. A higher score means broader, more complete messaging."
     )
     scores_df = build_messaging_category_scores(df, "description")
     avg_score = scores_df["claim_coverage_score"].mean()
 
     fig_score = px.histogram(
         scores_df, x="claim_coverage_score", nbins=20,
-        title="Claim Coverage Score Distribution",
+        title="Messaging Breadth Score Distribution",
         color_discrete_sequence=["#7B68EE"],
     )
     fig_score.update_layout(
-        xaxis_title="Coverage Score (0–100)", yaxis_title="Number of Listings",
+        xaxis_title="Messaging Breadth Score (0–100)", yaxis_title="Number of Listings",
     )
     fig_score.add_vline(
         x=avg_score, line_dash="dash", line_color="red",
@@ -1253,18 +1833,18 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
     st.plotly_chart(fig_score, use_container_width=True)
 
     c1, c2 = st.columns(2)
-    c1.metric("Avg Coverage Score", f"{avg_score:.1f} / 100")
+    c1.metric("Avg Messaging Breadth Score", f"{avg_score:.1f} / 100")
     fully_covered = int((scores_df["claim_coverage_score"] == 100).sum())
     c2.metric("Listings Covering All 6 Categories", f"{fully_covered:,}")
 
     st.divider()
 
-    # ── Section 5: Tommee Tippee Messaging Opportunities ──────────────────────
-    st.subheader("Tommee Tippee Messaging Opportunities")
+    # ── Section 5: Tommee Tippee vs Competitor Messaging ──────────────────────
+    st.subheader("Tommee Tippee vs Competitor Messaging")
     st.caption(
-        "Tommee Tippee's description messaging compared against all other competitors "
-        "in the filtered dataset. Taller competitor bars highlight categories where "
-        "Tommee Tippee's content lags — these are the clearest improvement opportunities."
+        "Tommee Tippee's description messaging compared against all other competitors. "
+        "Where competitor bars are taller, Tommee Tippee's content lags — "
+        "these are the clearest opportunities to strengthen copy."
     )
 
     if "brand" not in df.columns:
@@ -1349,6 +1929,218 @@ def tab_description_intelligence(df: pd.DataFrame) -> None:
                 .reset_index(drop=True)
             )
             st.dataframe(gap_tbl, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Section 6: Description Quality Score ──────────────────────────────────
+    st.subheader("Description Quality Score")
+    st.caption(
+        "How well-structured are competitor descriptions? "
+        "Each listing is scored against seven content sections: Opening Claim, Feature Details, "
+        "Benefit Language, Safety & Materials, Age & Fit, Care & Usage, and Trust Signals. "
+        "A higher score means more complete, persuasive copy."
+    )
+
+    desc_quality_df = compute_description_quality_scores(df)
+    if not desc_quality_df.empty:
+        avg_dq = desc_quality_df["description_quality_score"].mean()
+
+        # Section coverage bar chart
+        total = max(len(df), 1)
+        section_coverage_rows = []
+        for section in DESC_SECTION_PATTERNS:
+            if section in desc_quality_df.columns:
+                count = int(desc_quality_df[section].sum())
+                section_coverage_rows.append({
+                    "Description Section":     section,
+                    "Listings Including It":   count,
+                    "% of Listings":           round(count / total * 100, 1),
+                })
+        sec_cov_df = (
+            pd.DataFrame(section_coverage_rows)
+            .sort_values("% of Listings", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        fig_dq_cov = px.bar(
+            sec_cov_df, x="Description Section", y="% of Listings",
+            title="Description Section Coverage — Which Elements Are Most Common?",
+            color="% of Listings", color_continuous_scale="Greens",
+        )
+        fig_dq_cov.update_layout(
+            showlegend=False, xaxis_title="", yaxis_title="% of Listings", xaxis_tickangle=-20,
+        )
+        st.plotly_chart(fig_dq_cov, use_container_width=True)
+
+        # KPIs
+        least_covered_sec = sec_cov_df.iloc[-1] if not sec_cov_df.empty else None
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Avg Description Quality Score", f"{avg_dq:.0f} / 100")
+        if least_covered_sec is not None:
+            c2.metric(
+                "Most Missing Section",
+                least_covered_sec["Description Section"],
+                help=f"Only {least_covered_sec['% of Listings']:.0f}% of listings include this section.",
+            )
+        strong_descs = int((desc_quality_df["description_quality_score"] >= 57).sum())
+        c3.metric(
+            "Listings Covering 4+ Sections",
+            f"{strong_descs:,}",
+            help="Listings that include at least 4 of the 7 tracked content sections.",
+        )
+
+        # Quality score distribution
+        fig_dqs_hist = px.histogram(
+            desc_quality_df, x="description_quality_score", nbins=15,
+            title="Description Quality Score Distribution",
+            color_discrete_sequence=["#6B8E23"],
+        )
+        fig_dqs_hist.update_layout(
+            xaxis_title="Description Quality Score (0–100)", yaxis_title="Number of Listings",
+        )
+        fig_dqs_hist.add_vline(
+            x=avg_dq, line_dash="dash", line_color="red",
+            annotation_text=f"Avg: {avg_dq:.0f}",
+        )
+        st.plotly_chart(fig_dqs_hist, use_container_width=True)
+
+        # Brand-level description quality
+        if "brand" in desc_quality_df.columns:
+            brand_dq = (
+                desc_quality_df.groupby("brand")["description_quality_score"]
+                .mean().round(1).sort_values(ascending=False)
+                .reset_index().head(15)
+                .rename(columns={"brand": "Brand", "description_quality_score": "Avg Description Quality Score"})
+            )
+            fig_bdq = px.bar(
+                brand_dq, x="Brand", y="Avg Description Quality Score",
+                title="Average Description Quality Score by Brand",
+                color="Avg Description Quality Score", color_continuous_scale="Greens",
+            )
+            fig_bdq.update_layout(
+                showlegend=False, xaxis_title="", yaxis_title="Score (0–100)", xaxis_tickangle=-30,
+            )
+            st.plotly_chart(fig_bdq, use_container_width=True)
+
+        st.dataframe(sec_cov_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Unable to compute description quality scores — description column not found.")
+
+    st.divider()
+
+    # ── Section 7: Feature vs Benefit Balance ─────────────────────────────────
+    st.subheader("Feature vs Benefit Balance")
+    st.caption(
+        "Are competitor listings primarily telling customers **what** a product has (features), "
+        "or **what** it does for them (benefits)? "
+        "Benefit-led copy tends to be more persuasive and emotionally resonant. "
+        "This is a practical estimate based on language patterns in the description."
+    )
+
+    fb_df = compute_feature_benefit_balance(df, "description")
+    if not fb_df.empty:
+        orient_counts = fb_df["orientation"].value_counts().reset_index()
+        orient_counts.columns = ["Orientation", "Listings"]
+
+        col_left, col_right = st.columns(2)
+        with col_left:
+            fig_fb = px.bar(
+                orient_counts, x="Orientation", y="Listings",
+                title="Listing Messaging Orientation",
+                color="Orientation",
+                color_discrete_map={
+                    "Feature-Led":  "#4A90D9",
+                    "Benefit-Led":  "#2ECC71",
+                    "Balanced":     "#F39C12",
+                    "No Signal":    "#BDC3C7",
+                },
+            )
+            fig_fb.update_layout(showlegend=False, xaxis_title="", yaxis_title="Number of Listings")
+            st.plotly_chart(fig_fb, use_container_width=True)
+
+        with col_right:
+            total_signal = fb_df[fb_df["orientation"] != "No Signal"].shape[0]
+            benefit_led  = int((fb_df["orientation"] == "Benefit-Led").sum())
+            feature_led  = int((fb_df["orientation"] == "Feature-Led").sum())
+            balanced     = int((fb_df["orientation"] == "Balanced").sum())
+            st.markdown("**Breakdown**")
+            st.metric("Benefit-Led Listings", f"{benefit_led:,}")
+            st.metric("Feature-Led Listings", f"{feature_led:,}")
+            st.metric("Balanced Listings",    f"{balanced:,}")
+            if total_signal > 0:
+                benefit_pct = round(benefit_led / total_signal * 100)
+                st.caption(
+                    f"**{benefit_pct}%** of listings with detectable signal "
+                    f"lean toward benefit language."
+                )
+
+        # Brand-level breakdown
+        if "brand" in fb_df.columns:
+            brand_orient = (
+                fb_df[fb_df["orientation"] != "No Signal"]
+                .groupby(["brand", "orientation"])
+                .size().reset_index(name="count")
+            )
+            if not brand_orient.empty:
+                fig_fb_brand = px.bar(
+                    brand_orient, x="brand", y="count", color="orientation",
+                    barmode="stack",
+                    title="Feature vs Benefit Orientation by Brand",
+                    color_discrete_map={
+                        "Feature-Led": "#4A90D9",
+                        "Benefit-Led": "#2ECC71",
+                        "Balanced":    "#F39C12",
+                    },
+                )
+                fig_fb_brand.update_layout(
+                    xaxis_title="", yaxis_title="Listings",
+                    xaxis_tickangle=-30, legend_title="Orientation",
+                )
+                st.plotly_chart(fig_fb_brand, use_container_width=True)
+    else:
+        st.info("Unable to compute feature/benefit balance — description column not found.")
+
+    st.divider()
+
+    # ── Section 8: Competitive Differentiation Opportunities ──────────────────
+    st.subheader("Competitive Differentiation Opportunities")
+    st.caption(
+        "Not all claims are equal. Claims used by nearly every competitor are the market baseline — "
+        "expected but not differentiating. Claims used by fewer listings may represent a real "
+        "opportunity to stand out."
+    )
+
+    diff_claims_df = build_claim_presence(df, "description", CLAIM_MAP)
+    diff_insights  = build_differentiation_insights(diff_claims_df, total_listings=len(df))
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        st.markdown("**Market Standard (≥60% of listings)**")
+        st.caption("Every serious competitor uses these. Table stakes — must have, but not differentiating.")
+        if diff_insights["saturated"]:
+            for item in diff_insights["saturated"]:
+                st.markdown(f"- **{item['claim']}** — {item['pct']}% of listings")
+        else:
+            st.info("No claims are this widespread in the current dataset.")
+
+    with col_b:
+        st.markdown("**Notable Claims (20–59% of listings)**")
+        st.caption("Common enough to be meaningful but not universal — a solid differentiator if used well.")
+        if diff_insights["differentiating"]:
+            for item in diff_insights["differentiating"]:
+                st.markdown(f"- **{item['claim']}** — {item['pct']}% of listings")
+        else:
+            st.info("No claims in this range with current data.")
+
+    with col_c:
+        st.markdown("**White Space Claims (<20% of listings)**")
+        st.caption("Rarely used but present in the market — potential to stand out if the claim is authentic.")
+        if diff_insights["underused"]:
+            for item in diff_insights["underused"]:
+                st.markdown(f"- **{item['claim']}** — {item['pct']}% of listings")
+        else:
+            st.info("No underused claims detected — all active claims are broadly used.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1563,12 +2355,17 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     st.header("Tommee Tippee Deep Dive")
     st.caption(
         "A focused analysis of Tommee Tippee's Amazon listing content "
-        "compared directly against all other competitors in the filtered dataset."
+        "compared directly against all other competitors in the filtered dataset. "
+        "Analysis is scoped to **baby bottles and bottle nipples** only."
     )
 
+    # ── Scope to bottles and nipples only ─────────────────────────────────────
+    df = filter_bottles_and_nipples(df)
+    if df.empty:
+        st.warning("No baby bottle or nipple listings found with the current filters.")
+        return
+
     # ── Identify Tommee Tippee products ───────────────────────────────────────
-    # Case-insensitive match on any brand value containing "tommee".
-    # This captures "Tommee Tippee", "TOMMEE TIPPEE", etc.
     if "brand" not in df.columns:
         st.error("No 'brand' column found in the dataset.")
         return
@@ -1590,7 +2387,7 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     # ════════════════════════════════════════════════════════════════════════
     # SECTION 1: TOMMEE TIPPEE OVERVIEW
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("1. Tommee Tippee Overview")
+    st.subheader("1. Brand Overview")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("TT Products", f"{len(tt_df):,}")
@@ -1614,15 +2411,15 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     st.divider()
 
     # ════════════════════════════════════════════════════════════════════════
-    # SECTION 2: TITLE ANALYSIS
+    # SECTION 2: TITLE INTELLIGENCE
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("2. Title Analysis")
+    st.subheader("2. Title Intelligence")
 
     # ── 2a: Title keyword frequency (TT only) ─────────────────────────────
-    st.markdown("**Title Keyword Frequency (Tommee Tippee only)**")
+    st.markdown("**Top Phrases in Tommee Tippee Titles**")
     st.caption(
-        "Multi-word phrases are grouped as single concepts using the same "
-        "phrase logic applied across the rest of the dashboard."
+        "Multi-word phrases are treated as single concepts — "
+        "the same phrase logic used across the rest of the dashboard."
     )
 
     if title_col in tt_df.columns:
@@ -1650,7 +2447,7 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
         st.info("Title column not found.")
 
     # ── 2b: Title length distribution (TT vs competitor median overlay) ────
-    st.markdown("**Title Length Distribution**")
+    st.markdown("**Title Length: Tommee Tippee vs Competitors**")
     if "title_word_count" in tt_df.columns:
         tt_median_wc   = tt_df["title_word_count"].median()
         comp_median_wc = comp_df["title_word_count"].median() if len(comp_df) > 0 else None
@@ -1681,7 +2478,28 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     else:
         st.info("title_word_count column not found.")
 
-    # ── 2c: Top Tommee Tippee title examples ──────────────────────────────
+    # ── 2c: Title quality score comparison ────────────────────────────────
+    st.markdown("**Title Quality Score: Tommee Tippee vs Competitors**")
+    st.caption(
+        "The Title Quality Score measures how many key structural elements "
+        "(product type, feature, material, size, quantity, age, flow rate) each title includes."
+    )
+    tt_title_scores   = compute_title_quality_scores(tt_df)
+    comp_title_scores = compute_title_quality_scores(comp_df)
+    if not tt_title_scores.empty and not comp_title_scores.empty:
+        tt_tqs_avg   = tt_title_scores["title_quality_score"].mean()
+        comp_tqs_avg = comp_title_scores["title_quality_score"].mean()
+        delta_tqs    = tt_tqs_avg - comp_tqs_avg
+        c1, c2, c3 = st.columns(3)
+        c1.metric("TT Avg Title Quality", f"{tt_tqs_avg:.0f} / 100")
+        c2.metric("Competitor Avg Title Quality", f"{comp_tqs_avg:.0f} / 100")
+        c3.metric(
+            "TT vs Competitor Gap",
+            f"{delta_tqs:+.0f} pts",
+            help="Positive = Tommee Tippee titles are more complete. Negative = competitors lead.",
+        )
+
+    # ── 2d: Top Tommee Tippee title examples ──────────────────────────────
     st.markdown("**Top Tommee Tippee Title Examples**")
     st.caption("Top 15 Tommee Tippee listings sorted by review count.")
 
@@ -1704,15 +2522,15 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     st.divider()
 
     # ════════════════════════════════════════════════════════════════════════
-    # SECTION 3: DESCRIPTION ANALYSIS
+    # SECTION 3: DESCRIPTION INTELLIGENCE
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("3. Description Analysis")
+    st.subheader("3. Description Intelligence")
 
     if "description" not in tt_df.columns:
         st.info("No 'description' column found.")
     else:
         # ── 3a: Description keyword/theme frequency (TT only) ─────────────
-        st.markdown("**Description Keyword / Theme Frequency (Tommee Tippee only)**")
+        st.markdown("**Top Messaging Themes in Tommee Tippee Descriptions**")
         tt_desc_kw = extract_keyword_frequencies(
             tt_df["description"], DESC_PHRASE_MAP, DESC_STOPWORDS, top_n=25
         )
@@ -1735,8 +2553,8 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
             st.info("No description keywords found for Tommee Tippee.")
 
         # ── 3b: Marketing claims frequency (TT only) ──────────────────────
-        st.markdown("**Marketing Claims Frequency (Tommee Tippee only)**")
-        st.caption("Each listing counted once per claim, regardless of how many times it appears.")
+        st.markdown("**Product Claims in Tommee Tippee Descriptions**")
+        st.caption("Each listing counted once per claim, regardless of repetition.")
 
         tt_claims = build_claim_presence(tt_df, "description", CLAIM_MAP)
         tt_active_claims = tt_claims[tt_claims["listings"] > 0].copy()
@@ -1760,7 +2578,7 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
             st.info("No marketing claims detected in Tommee Tippee descriptions.")
 
         # ── 3c: Description length distribution (TT vs competitor median) ──
-        st.markdown("**Description Length Distribution**")
+        st.markdown("**Description Length: Tommee Tippee vs Competitors**")
         if "description_length" in tt_df.columns:
             tt_med_len   = tt_df["description_length"].median()
             comp_med_len = comp_df["description_length"].median() if len(comp_df) > 0 else None
@@ -1790,7 +2608,29 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
         else:
             st.info("description_length column not found.")
 
-        # ── 3d: Top Tommee Tippee description examples ────────────────────
+        # ── 3d: Description quality score comparison ───────────────────────
+        st.markdown("**Description Quality Score: Tommee Tippee vs Competitors**")
+        st.caption(
+            "The Description Quality Score measures how many key content sections "
+            "(Opening Claim, Feature Details, Benefit Language, Safety & Materials, "
+            "Age & Fit, Care & Usage, Trust Signals) each description covers."
+        )
+        tt_desc_quality   = compute_description_quality_scores(tt_df)
+        comp_desc_quality = compute_description_quality_scores(comp_df)
+        if not tt_desc_quality.empty and not comp_desc_quality.empty:
+            tt_dqs_avg   = tt_desc_quality["description_quality_score"].mean()
+            comp_dqs_avg = comp_desc_quality["description_quality_score"].mean()
+            delta_dqs    = tt_dqs_avg - comp_dqs_avg
+            c1, c2, c3 = st.columns(3)
+            c1.metric("TT Avg Description Quality",         f"{tt_dqs_avg:.0f} / 100")
+            c2.metric("Competitor Avg Description Quality", f"{comp_dqs_avg:.0f} / 100")
+            c3.metric(
+                "TT vs Competitor Gap",
+                f"{delta_dqs:+.0f} pts",
+                help="Positive = Tommee Tippee descriptions are more complete. Negative = competitors lead.",
+            )
+
+        # ── 3e: Top Tommee Tippee description examples ────────────────────
         st.markdown("**Top Tommee Tippee Description Examples**")
         st.caption("Top 10 listings sorted by review count. Descriptions truncated for readability.")
 
@@ -1822,20 +2662,21 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     st.divider()
 
     # ════════════════════════════════════════════════════════════════════════
-    # SECTION 4: COMPETITOR GAP ANALYSIS
+    # SECTION 4: COMPETITIVE GAP ANALYSIS
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("4. Competitor Gap Analysis")
+    st.subheader("4. Competitive Gap Analysis")
     st.caption(
-        "Positive gap values (in percentage points) mean competitors use that keyword/claim "
-        "more often than Tommee Tippee — these are the biggest content opportunities. "
-        "Frequencies are normalised by group size for a fair comparison."
+        "Where competitors outpace Tommee Tippee on specific phrases and claims. "
+        "Positive gap values (%) mean competitors use that keyword/claim more often — "
+        "these represent the biggest content improvement opportunities. "
+        "All frequencies are normalized by group size for a fair comparison."
     )
 
     if len(comp_df) == 0:
         st.info("No competitor products in the current filtered data to compare against.")
     else:
         # ── 4a: Title keyword gap ──────────────────────────────────────────
-        st.markdown("**Title Keyword Gap: Tommee Tippee vs Competitors**")
+        st.markdown("**Title Phrase Gap: Tommee Tippee vs Competitors**")
         if title_col in tt_df.columns and title_col in comp_df.columns:
             title_gap_df = build_keyword_gap_table(
                 tt_df, comp_df, title_col, TITLE_PHRASE_MAP, TITLE_STOPWORDS, top_n=40
@@ -1854,7 +2695,7 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
             title_gap_df = pd.DataFrame()
 
         # ── 4b: Description keyword/theme gap ─────────────────────────────
-        st.markdown("**Description Theme Gap: Tommee Tippee vs Competitors**")
+        st.markdown("**Description Messaging Theme Gap: Tommee Tippee vs Competitors**")
         if "description" in tt_df.columns and "description" in comp_df.columns:
             desc_gap_df = build_keyword_gap_table(
                 tt_df, comp_df, "description", DESC_PHRASE_MAP, DESC_STOPWORDS, top_n=40
@@ -1871,7 +2712,7 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
             desc_gap_df = pd.DataFrame()
 
         # ── 4c: Marketing claims gap ───────────────────────────────────────
-        st.markdown("**Marketing Claims Gap: Tommee Tippee vs Competitors**")
+        st.markdown("**Product Claims Gap: Tommee Tippee vs Competitors**")
         if "description" in tt_df.columns and "description" in comp_df.columns:
             claim_gap_df = build_claim_gap_table(tt_df, comp_df, "description", CLAIM_MAP)
             st.dataframe(
@@ -1919,10 +2760,11 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
     # ════════════════════════════════════════════════════════════════════════
     # SECTION 6: RECOMMENDATIONS
     # ════════════════════════════════════════════════════════════════════════
-    st.subheader("6. How Tommee Tippee Can Improve")
+    st.subheader("6. Recommendations & Opportunities")
     st.caption(
-        "Rule-based insights derived from the gap analysis above. "
-        "Positive gaps indicate areas where competitors have stronger content coverage."
+        "Prioritized recommendations derived from the gap analysis above. "
+        "Each insight identifies a specific content area where Tommee Tippee "
+        "has room to close the gap with competitors."
     )
 
     # Only generate recommendations if we ran the gap analysis successfully
