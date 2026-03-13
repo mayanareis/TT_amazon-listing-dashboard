@@ -2831,9 +2831,20 @@ def tab_tt_immersion() -> None:
         return
 
     st.header("Tommee Tippee — Competitive Immersion")
-    st.caption(
-        "Analysis of the Tommee Tippee product landscape on Amazon — "
-        "own brand vs. competitor listings, pricing, messaging, and white space."
+    st.subheader("Branded Search Competitive Landscape")
+
+    st.info(
+        "**Data Scope**\n\n"
+        "This tab only represents results for these 3 branded keywords:\n\n"
+        "- tommee tippee bottle\n"
+        "- tommee tippee anti colic bottles\n"
+        "- tommee tippee bottle newborn\n\n"
+        "The analysis shows the competitive landscape **within Tommee Tippee branded search results**, including:\n\n"
+        "- Tommee Tippee listings\n"
+        "- Competitor listings appearing in those searches\n"
+        "- Accessory and compatible products that surface in those results\n\n"
+        "This section does **NOT** represent the entire baby bottle category. "
+        "It only reflects what shoppers see when they search for Tommee Tippee-related queries."
     )
 
     # ── Inline filters (do not affect sidebar or other tabs) ──────────────────
