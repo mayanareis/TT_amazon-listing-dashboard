@@ -29,6 +29,7 @@ st.set_page_config(
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CLEANED_FILE = PROJECT_ROOT / "data" / "cleaned" / "amazon_products_clean.csv"
+TT_IMMERSION_FILE = PROJECT_ROOT / "data" / "processed" / "tt_immersion_clean.csv"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1267,6 +1268,23 @@ def load_data(path: Path) -> pd.DataFrame:
     if "price_value" in df.columns:
         df = df[df["price_value"].isna() | df["price_value"].between(3, 100)].copy()
 
+    return df
+
+
+@st.cache_data
+def load_tt_immersion_data() -> pd.DataFrame:
+    """Load the Tommee Tippee immersion CSV produced by clean_tt_immersion.py."""
+    if not TT_IMMERSION_FILE.exists():
+        return pd.DataFrame()
+    df = pd.read_csv(TT_IMMERSION_FILE)
+    for col in ["stars", "reviewsCount", "price_value", "title_word_count",
+                "description_length", "popularity_score"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for bool_col in ["is_tommee_tippee_brand", "is_competitor_brand",
+                     "is_compatible_accessory", "is_core_bottle_listing"]:
+        if bool_col in df.columns:
+            df[bool_col] = df[bool_col].astype(bool)
     return df
 
 
@@ -2796,6 +2814,402 @@ def tab_tommee_tippee(df: pd.DataFrame) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 7 — TOMMEE TIPPEE IMMERSION
+# Standalone tab powered by data/processed/tt_immersion_clean.csv.
+# Does NOT touch the sidebar-filtered df used by other tabs.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def tab_tt_immersion() -> None:
+    """Tommee Tippee competitive immersion — 8 intelligence sections."""
+    df_full = load_tt_immersion_data()
+
+    if df_full.empty:
+        st.error(
+            "Tommee Tippee dataset not found. "
+            "Run `scripts/clean_tt_immersion.py` to generate it."
+        )
+        return
+
+    st.header("Tommee Tippee — Competitive Immersion")
+    st.caption(
+        "Analysis of the Tommee Tippee product landscape on Amazon — "
+        "own brand vs. competitor listings, pricing, messaging, and white space."
+    )
+
+    # ── Inline filters (do not affect sidebar or other tabs) ──────────────────
+    with st.expander("Filter this view", expanded=False):
+        col_f1, col_f2, col_f3 = st.columns(3)
+
+        all_product_types = sorted(df_full["product_type"].dropna().unique().tolist())
+        selected_types = col_f1.multiselect(
+            "Product Type", all_product_types, default=all_product_types,
+            key="tt_product_types"
+        )
+
+        price_min = float(df_full["price_value"].min(skipna=True)) if df_full["price_value"].notna().any() else 0.0
+        price_max = float(df_full["price_value"].max(skipna=True)) if df_full["price_value"].notna().any() else 200.0
+        price_range = col_f2.slider(
+            "Price range ($)", min_value=price_min, max_value=price_max,
+            value=(price_min, price_max), step=0.5, key="tt_price_range"
+        )
+
+        show_only = col_f3.radio(
+            "Show", ["All listings", "Tommee Tippee only", "Competitors only"],
+            key="tt_show_only"
+        )
+
+    # Apply inline filters
+    df = df_full.copy()
+    if selected_types:
+        df = df[df["product_type"].isin(selected_types)]
+    df = df[
+        df["price_value"].isna() |
+        df["price_value"].between(price_range[0], price_range[1])
+    ]
+    if show_only == "Tommee Tippee only":
+        df = df[df["is_tommee_tippee_brand"]]
+    elif show_only == "Competitors only":
+        df = df[df["is_competitor_brand"]]
+
+    if df.empty:
+        st.warning("No listings match the current filters.")
+        return
+
+    tt = df[df["is_tommee_tippee_brand"]]
+    comp = df[df["is_competitor_brand"]]
+
+    st.divider()
+
+    # ── Section 1: Share of Shelf ──────────────────────────────────────────────
+    st.subheader("1. Share of Shelf")
+    st.caption("How many listings does each brand own in this product space?")
+
+    brand_counts = df["brand"].value_counts().reset_index()
+    brand_counts.columns = ["Brand", "Listings"]
+    total_listings = len(df)
+
+    col1, col2, col3 = st.columns(3)
+    tt_count = int(df["is_tommee_tippee_brand"].sum())
+    comp_count = int(df["is_competitor_brand"].sum())
+    other_count = total_listings - tt_count - comp_count
+    col1.metric("Tommee Tippee", f"{tt_count}", f"{tt_count/total_listings*100:.0f}% of shelf" if total_listings else "—")
+    col2.metric("Competitors", f"{comp_count}", f"{comp_count/total_listings*100:.0f}% of shelf" if total_listings else "—")
+    col3.metric("Other / Accessories", f"{other_count}")
+
+    fig_shelf = px.bar(
+        brand_counts.head(15),
+        x="Listings", y="Brand", orientation="h",
+        color="Brand",
+        color_discrete_map={"Tommee Tippee": "#0066cc"},
+        title="Top Brands by Listing Count",
+    )
+    fig_shelf.update_layout(showlegend=False, yaxis={"autorange": "reversed"})
+    st.plotly_chart(fig_shelf, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 2: Product Type Breakdown ──────────────────────────────────────
+    st.subheader("2. Product Type Breakdown")
+    st.caption("What types of products are represented in the search results?")
+
+    pt_counts = df["product_type"].value_counts().reset_index()
+    pt_counts.columns = ["Product Type", "Listings"]
+    pt_counts["Product Type Label"] = pt_counts["Product Type"].str.replace("_", " ").str.title()
+
+    col_pt1, col_pt2 = st.columns([2, 1])
+    with col_pt1:
+        fig_pt = px.bar(
+            pt_counts,
+            x="Product Type Label", y="Listings",
+            title="Listings by Product Type",
+            color="Product Type Label",
+        )
+        fig_pt.update_layout(showlegend=False)
+        st.plotly_chart(fig_pt, use_container_width=True)
+    with col_pt2:
+        st.markdown("**By brand**")
+        tt_pt = tt["product_type"].value_counts().rename("Tommee Tippee")
+        comp_pt = comp["product_type"].value_counts().rename("Competitors")
+        pt_compare = pd.concat([tt_pt, comp_pt], axis=1).fillna(0).astype(int)
+        pt_compare.index = pt_compare.index.str.replace("_", " ").str.title()
+        st.dataframe(pt_compare, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 3: Competitor Interception ────────────────────────────────────
+    st.subheader("3. Competitor Interception")
+    st.caption(
+        "Which competitor brands are most present in Tommee Tippee search results? "
+        "A high presence signals direct competition for these keywords."
+    )
+
+    if comp.empty:
+        st.info("No competitor listings in current filter.")
+    else:
+        comp_brand_counts = comp["brand"].value_counts().reset_index()
+        comp_brand_counts.columns = ["Competitor Brand", "Listings"]
+
+        fig_comp = px.bar(
+            comp_brand_counts,
+            x="Listings", y="Competitor Brand", orientation="h",
+            title="Competitor Brands — Listing Count in TT Search Space",
+            color_discrete_sequence=["#e05c2a"],
+        )
+        fig_comp.update_layout(yaxis={"autorange": "reversed"})
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+        avg_tt_rating = tt["stars"].mean() if not tt.empty else None
+        avg_comp_rating = comp["stars"].mean() if not comp.empty else None
+        avg_tt_reviews = tt["reviewsCount"].mean() if not tt.empty else None
+        avg_comp_reviews = comp["reviewsCount"].mean() if not comp.empty else None
+
+        col_ci1, col_ci2, col_ci3, col_ci4 = st.columns(4)
+        col_ci1.metric("TT avg. rating", f"{avg_tt_rating:.2f} ★" if avg_tt_rating else "—")
+        col_ci2.metric("Competitor avg. rating", f"{avg_comp_rating:.2f} ★" if avg_comp_rating else "—")
+        col_ci3.metric("TT avg. reviews", f"{avg_tt_reviews:,.0f}" if avg_tt_reviews else "—")
+        col_ci4.metric("Competitor avg. reviews", f"{avg_comp_reviews:,.0f}" if avg_comp_reviews else "—")
+
+    st.divider()
+
+    # ── Section 4: Brand Defense (TT compatible accessories) ──────────────────
+    st.subheader("4. Brand Defense Signal")
+    st.caption(
+        "Listings that claim compatibility with Tommee Tippee products "
+        "compete indirectly by targeting the same customer base."
+    )
+
+    compat = df[df["is_compatible_accessory"]]
+    n_compat = len(compat)
+    n_compat_nottt = len(compat[~compat["is_tommee_tippee_brand"]])
+
+    col_bd1, col_bd2 = st.columns(2)
+    col_bd1.metric("Listings claiming TT compatibility", n_compat)
+    col_bd2.metric("Of which NOT by Tommee Tippee", n_compat_nottt,
+                   delta=f"{'⚠ brand intrusion' if n_compat_nottt > 5 else 'low risk'}",
+                   delta_color="inverse")
+
+    if n_compat > 0:
+        with st.expander("See compatibility-claiming listings", expanded=False):
+            compat_display = compat[["title", "brand", "price_value", "stars"]].copy()
+            compat_display.columns = ["Title", "Brand", "Price ($)", "Rating"]
+            st.dataframe(compat_display, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 5: Title Intelligence ─────────────────────────────────────────
+    st.subheader("5. Title Intelligence")
+    st.caption(
+        "What words and phrases dominate Tommee Tippee vs. competitor titles? "
+        "Gaps reveal messaging white space."
+    )
+
+    col_ti1, col_ti2 = st.columns(2)
+
+    with col_ti1:
+        st.markdown("**Tommee Tippee — Top Title Keywords**")
+        if not tt.empty and "title" in tt.columns:
+            tt_kw = extract_keyword_frequencies(
+                tt["title"].dropna(), TITLE_PHRASE_MAP, TITLE_STOPWORDS, top_n=15
+            )
+            if not tt_kw.empty:
+                fig_tt_kw = px.bar(
+                    tt_kw, x="frequency", y="keyword", orientation="h",
+                    color_discrete_sequence=["#0066cc"],
+                )
+                fig_tt_kw.update_layout(yaxis={"autorange": "reversed"}, showlegend=False)
+                st.plotly_chart(fig_tt_kw, use_container_width=True)
+        else:
+            st.info("No Tommee Tippee listings in current filter.")
+
+    with col_ti2:
+        st.markdown("**Competitors — Top Title Keywords**")
+        if not comp.empty and "title" in comp.columns:
+            comp_kw = extract_keyword_frequencies(
+                comp["title"].dropna(), TITLE_PHRASE_MAP, TITLE_STOPWORDS, top_n=15
+            )
+            if not comp_kw.empty:
+                fig_comp_kw = px.bar(
+                    comp_kw, x="frequency", y="keyword", orientation="h",
+                    color_discrete_sequence=["#e05c2a"],
+                )
+                fig_comp_kw.update_layout(yaxis={"autorange": "reversed"}, showlegend=False)
+                st.plotly_chart(fig_comp_kw, use_container_width=True)
+        else:
+            st.info("No competitor listings in current filter.")
+
+    # Title attribute coverage comparison
+    st.markdown("**Title Attribute Coverage — TT vs. Competitors**")
+    if not tt.empty and not comp.empty:
+        coverage_rows = []
+        for component, pattern in TITLE_COMPONENTS.items():
+            tt_hits = tt["title"].dropna().str.contains(pattern, case=False, regex=True).sum()
+            comp_hits = comp["title"].dropna().str.contains(pattern, case=False, regex=True).sum()
+            tt_pct = tt_hits / len(tt) * 100 if len(tt) else 0
+            comp_pct = comp_hits / len(comp) * 100 if len(comp) else 0
+            coverage_rows.append({
+                "Attribute": component,
+                "Tommee Tippee %": round(tt_pct, 1),
+                "Competitors %": round(comp_pct, 1),
+            })
+        cov_df = pd.DataFrame(coverage_rows)
+        fig_cov = px.bar(
+            cov_df.melt(id_vars="Attribute", var_name="Brand Group", value_name="% of titles"),
+            x="Attribute", y="% of titles", color="Brand Group", barmode="group",
+            color_discrete_map={"Tommee Tippee %": "#0066cc", "Competitors %": "#e05c2a"},
+        )
+        st.plotly_chart(fig_cov, use_container_width=True)
+
+    st.divider()
+
+    # ── Section 6: Messaging Intelligence ────────────────────────────────────
+    st.subheader("6. Messaging Intelligence")
+    st.caption(
+        "Which marketing claims appear in descriptions? "
+        "Compare TT's claim mix to competitors."
+    )
+
+    def count_claims(subset: pd.DataFrame) -> pd.Series:
+        desc_series = subset["description"].dropna().astype(str)
+        counts: dict = {}
+        for claim_label, pattern in CLAIM_MAP.items():
+            hits = desc_series.str.contains(pattern, case=False, regex=True).sum()
+            if hits > 0:
+                counts[claim_label] = hits
+        return pd.Series(counts)
+
+    if "description" in df.columns:
+        tt_claims = count_claims(tt).rename("Tommee Tippee")
+        comp_claims = count_claims(comp).rename("Competitors")
+        claims_df = pd.concat([tt_claims, comp_claims], axis=1).fillna(0).astype(int)
+        claims_df = claims_df[claims_df.sum(axis=1) > 0].sort_values("Tommee Tippee", ascending=False)
+
+        if not claims_df.empty:
+            # Normalize to % of listings in each group
+            tt_n = max(len(tt), 1)
+            comp_n = max(len(comp), 1)
+            claims_pct = claims_df.copy().astype(float)
+            claims_pct["Tommee Tippee"] = (claims_df["Tommee Tippee"] / tt_n * 100).round(1)
+            claims_pct["Competitors"] = (claims_df["Competitors"] / comp_n * 100).round(1)
+            claims_pct = claims_pct.reset_index().rename(columns={"index": "Claim"})
+
+            fig_claims = px.bar(
+                claims_pct.melt(id_vars="Claim", var_name="Brand Group", value_name="% of listings"),
+                x="% of listings", y="Claim", color="Brand Group", barmode="group",
+                orientation="h",
+                color_discrete_map={"Tommee Tippee": "#0066cc", "Competitors": "#e05c2a"},
+                title="Marketing Claim Usage — % of Listings",
+            )
+            fig_claims.update_layout(yaxis={"autorange": "reversed"})
+            st.plotly_chart(fig_claims, use_container_width=True)
+        else:
+            st.info("No claim patterns matched in descriptions.")
+    else:
+        st.info("No description data available.")
+
+    st.divider()
+
+    # ── Section 7: Pricing Positioning ────────────────────────────────────────
+    st.subheader("7. Pricing Positioning")
+    st.caption(
+        "How does Tommee Tippee price relative to competitors? "
+        "Distribution reveals whether TT leans budget, mid, or premium."
+    )
+
+    priced_df = df[df["price_value"].notna()]
+    if not priced_df.empty:
+        col_pp1, col_pp2 = st.columns(2)
+
+        with col_pp1:
+            fig_price_hist = px.histogram(
+                priced_df,
+                x="price_value",
+                color="is_tommee_tippee_brand",
+                color_discrete_map={True: "#0066cc", False: "#aaaaaa"},
+                barmode="overlay",
+                nbins=30,
+                labels={"price_value": "Price ($)", "is_tommee_tippee_brand": "TT Brand"},
+                title="Price Distribution — TT (blue) vs. All Others (grey)",
+            )
+            fig_price_hist.update_layout(showlegend=False)
+            st.plotly_chart(fig_price_hist, use_container_width=True)
+
+        with col_pp2:
+            price_summary_rows = []
+            for label, subset in [("Tommee Tippee", tt), ("Competitors", comp)]:
+                p = subset["price_value"].dropna()
+                if not p.empty:
+                    price_summary_rows.append({
+                        "Brand Group": label,
+                        "Min ($)": round(p.min(), 2),
+                        "Median ($)": round(p.median(), 2),
+                        "Mean ($)": round(p.mean(), 2),
+                        "Max ($)": round(p.max(), 2),
+                        "Listings": len(p),
+                    })
+            if price_summary_rows:
+                st.markdown("**Price Summary**")
+                st.dataframe(pd.DataFrame(price_summary_rows), use_container_width=True)
+
+            # Price tier breakdown
+            if "price_flag" in df.columns:
+                st.markdown("**Price Tier Mix**")
+                tier_order = ["budget", "mid", "premium", "luxury", "unknown"]
+                tt_tiers = tt["price_flag"].value_counts().reindex(tier_order, fill_value=0).rename("TT")
+                comp_tiers = comp["price_flag"].value_counts().reindex(tier_order, fill_value=0).rename("Comp")
+                tier_df = pd.concat([tt_tiers, comp_tiers], axis=1)
+                tier_df.index.name = "Price Tier"
+                st.dataframe(tier_df, use_container_width=True)
+    else:
+        st.info("No price data available for current filter.")
+
+    st.divider()
+
+    # ── Section 8: Product Family View ────────────────────────────────────────
+    st.subheader("8. Product Family View")
+    st.caption(
+        "Tommee Tippee's own product families — "
+        "how many variants per family, ratings, and price spread."
+    )
+
+    if not tt.empty and "product_family" in tt.columns:
+        family_groups = (
+            tt[tt["product_family"].notna() & (tt["product_family"] != "")]
+            .groupby("product_family")
+            .agg(
+                Variants=("asin", "count"),
+                Avg_Rating=("stars", "mean"),
+                Avg_Price=("price_value", "mean"),
+                Min_Price=("price_value", "min"),
+                Max_Price=("price_value", "max"),
+            )
+            .round(2)
+            .sort_values("Variants", ascending=False)
+            .reset_index()
+        )
+        family_groups.rename(columns={
+            "product_family": "Product Family",
+            "Avg_Rating": "Avg Rating",
+            "Avg_Price": "Avg Price ($)",
+            "Min_Price": "Min Price ($)",
+            "Max_Price": "Max Price ($)",
+        }, inplace=True)
+
+        st.dataframe(
+            family_groups.head(40),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        with st.expander("Search a specific product family", expanded=False):
+            search_term = st.text_input("Type part of a family name", key="tt_family_search")
+            if search_term:
+                mask = family_groups["Product Family"].str.contains(search_term, case=False, na=False)
+                st.dataframe(family_groups[mask], use_container_width=True, hide_index=True)
+    else:
+        st.info("Product family data not available.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2825,15 +3239,16 @@ def main() -> None:
         )
         return
 
-    # Six-tab layout — first five are the existing general dashboard;
-    # sixth is the new Tommee Tippee Deep Dive.
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    # Seven-tab layout — first six are the existing general dashboard;
+    # seventh is the new Tommee Tippee Immersion.
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "Overview",
         "Title Intelligence",
         "Description Intelligence",
         "Image Analysis",
         "Product Explorer",
         "Tommee Tippee Deep Dive",
+        "Tommee Tippee Immersion",
     ])
 
     with tab1:
@@ -2848,6 +3263,8 @@ def main() -> None:
         tab_product_explorer(df)
     with tab6:
         tab_tommee_tippee(df)
+    with tab7:
+        tab_tt_immersion()
 
 
 if __name__ == "__main__":
