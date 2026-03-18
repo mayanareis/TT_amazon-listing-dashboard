@@ -1210,6 +1210,31 @@ def extract_section_examples(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PRODUCT GROUP DERIVATION
+# Maps category_leaf values to broader product groups for sidebar filtering.
+# Defined at module level so st.cache_data can hash it correctly.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _derive_product_group(leaf: str) -> str:
+    """Map a category_leaf value to a broad product group label."""
+    lc = str(leaf).strip().lower()
+    if lc in ("bottles", "bottle sets"):
+        return "Baby Bottles"
+    if lc == "nipples":
+        return "Bottle Nipples"
+    if lc == "cups":
+        return "Cups & Sippy Cups"
+    if lc in (
+        "bottle brushes", "bottle drying racks", "bottle warmers",
+        "sterilizers", "insulated bottle bags", "breastmilk containers",
+        "bottle handles", "breastfeeding", "manual", "pacifiers",
+        "newborn gift sets",
+    ):
+        return "Feeding Accessories"
+    return "Other Baby Products"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DATA LOADING
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1268,6 +1293,10 @@ def load_data(path: Path) -> pd.DataFrame:
     if "price_value" in df.columns:
         df = df[df["price_value"].isna() | df["price_value"].between(3, 100)].copy()
 
+    # ── 5. Derive product_group from category_leaf for sidebar filtering.
+    if "category_leaf" in df.columns:
+        df["product_group"] = df["category_leaf"].apply(_derive_product_group)
+
     return df
 
 
@@ -1313,6 +1342,14 @@ def apply_sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
         cat_options = sorted(df["category_root"].dropna().astype(str).unique())
         selected_cats = st.sidebar.multiselect("Category", cat_options, default=cat_options)
         filtered = filtered[filtered["category_root"].astype(str).isin(selected_cats)]
+
+    # Product group multiselect (derived from category_leaf)
+    if "product_group" in df.columns:
+        group_options = sorted(df["product_group"].dropna().unique())
+        selected_groups = st.sidebar.multiselect(
+            "Product Group", group_options, default=group_options
+        )
+        filtered = filtered[filtered["product_group"].isin(selected_groups)]
 
     # Price range slider
     if "price_value" in df.columns:
@@ -2281,16 +2318,10 @@ def tab_image_analysis(df: pd.DataFrame) -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def tab_product_explorer(df: pd.DataFrame) -> None:
-    """Render the Product Explorer tab.
-
-    Layout:
-        - Collapsible thumbnail gallery (top 16 by reviewsCount, 4 per row)
-        - Clean interactive table: title, brand, stars, reviewsCount, price_value, url
-          sorted by reviewsCount descending, with free-text search
-    """
+    """Render the Product Explorer tab: searchable table only."""
     st.header("Product Explorer")
     st.caption(
-        "Search and compare individual competitor listings. "
+        "Search and compare individual listings. "
         "Click any URL to open the live Amazon product page."
     )
 
@@ -2300,7 +2331,6 @@ def tab_product_explorer(df: pd.DataFrame) -> None:
         placeholder="e.g. anti-colic, Philips Avent, glass bottle",
     )
 
-    # Build the table data (no thumbnail column — shown separately below)
     table_cols = [
         c for c in ["title", "brand", "stars", "reviewsCount", "price_value", "url"]
         if c in df.columns
@@ -2315,36 +2345,10 @@ def tab_product_explorer(df: pd.DataFrame) -> None:
             mask |= explorer_df["brand"].astype(str).str.contains(search_term, case=False, na=False)
         explorer_df = explorer_df[mask]
 
-    # Sort by review count descending — most validated products at the top
     if "reviewsCount" in explorer_df.columns:
         explorer_df = explorer_df.sort_values("reviewsCount", ascending=False)
 
     st.caption(f"Showing {len(explorer_df):,} products")
-
-    # ── Thumbnail gallery (visual companion, collapsible) ─────────────────────
-    img_col = "thumbnailImage" if "thumbnailImage" in df.columns else None
-    if img_col:
-        # Merge thumbnails back using the filtered explorer index
-        thumb_df = df.loc[explorer_df.index, [img_col] + [c for c in ["brand", "title"] if c in df.columns]].copy()
-        thumb_df = thumb_df[
-            thumb_df[img_col].notna()
-            & thumb_df[img_col].astype(str).str.startswith("http")
-        ].head(16)  # cap at 16 for quick rendering
-
-        if not thumb_df.empty:
-            with st.expander("Thumbnail Preview (top 16 results)", expanded=True):
-                cols_per_row = 4
-                for row_start in range(0, len(thumb_df), cols_per_row):
-                    row_slice = thumb_df.iloc[row_start: row_start + cols_per_row]
-                    cols = st.columns(cols_per_row)
-                    for col, (_, product) in zip(cols, row_slice.iterrows()):
-                        with col:
-                            try:
-                                st.image(str(product[img_col]), use_container_width=True)
-                            except Exception:
-                                st.write("N/A")
-                            brand_label = str(product.get("brand", "")) if pd.notna(product.get("brand")) else ""
-                            st.caption(f"**{brand_label}**")
 
     # ── Data table ────────────────────────────────────────────────────────────
     col_cfg: dict = {}
@@ -2830,8 +2834,8 @@ def tab_tt_immersion() -> None:
         )
         return
 
-    st.header("Tommee Tippee — Competitive Immersion")
-    st.subheader("Branded Search Competitive Landscape")
+    st.header("Branded Search")
+    st.subheader("Competitive Landscape in Tommee Tippee Search Results")
 
     st.info(
         "**Data Scope**\n\n"
@@ -3225,10 +3229,11 @@ def tab_tt_immersion() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
-    st.title("Amazon Competitive Listing Intelligence")
+    st.title("Tommee Tippee \u2014 Amazon Competitive Intelligence")
     st.caption(
-        "Analyze how competitors craft their titles, descriptions, and images. "
-        "Use the sidebar to filter by brand, category, price, or rating."
+        "A focused view of the Amazon baby bottle competitive landscape, "
+        "designed to help Tommee Tippee understand its position and opportunities. "
+        "Use the sidebar to filter by brand, price, or rating."
     )
 
     # Load data once per session (cached)
@@ -3250,16 +3255,15 @@ def main() -> None:
         )
         return
 
-    # Seven-tab layout — first six are the existing general dashboard;
-    # seventh is the new Tommee Tippee Immersion.
+    # Seven-tab layout.
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "Overview",
         "Title Intelligence",
         "Description Intelligence",
         "Image Analysis",
-        "Product Explorer",
         "Tommee Tippee Deep Dive",
-        "Tommee Tippee Immersion",
+        "Branded Search",
+        "Product Explorer",
     ])
 
     with tab1:
@@ -3271,11 +3275,11 @@ def main() -> None:
     with tab4:
         tab_image_analysis(df)
     with tab5:
-        tab_product_explorer(df)
-    with tab6:
         tab_tommee_tippee(df)
-    with tab7:
+    with tab6:
         tab_tt_immersion()
+    with tab7:
+        tab_product_explorer(df)
 
 
 if __name__ == "__main__":
